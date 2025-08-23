@@ -185,6 +185,7 @@ namespace Aeloria.Entities.Player
         /// </summary>
         private void HandleMovement()
         {
+            Quaternion isoRotation = Quaternion.Euler(0, 45f, 0f);
             switch (currentState)
             {
                 case PlayerState.Idle:
@@ -193,13 +194,17 @@ namespace Aeloria.Entities.Player
 
                 case PlayerState.Moving:
                     // Direct mapping - adjust these if movement feels wrong
-                    Vector3 movement = new Vector3(moveInput.x, 0, moveInput.y) * moveSpeed;
-                    rb.linearVelocity = movement;
+                    Vector3 movement = new Vector3(moveInput.x, 0, moveInput.y);
+                    movement = isoRotation * movement;
+                    Vector2 movement2D = new(movement.x, movement.z);
+                    rb.linearVelocity = movement2D * moveSpeed;
                     break;
 
                 case PlayerState.Dodging:
-                    Vector3 dodgeMovement = new Vector3(dodgeDirection.x, 0, dodgeDirection.y) * dodgeSpeed;
-                    rb.linearVelocity = dodgeMovement;
+                    Vector3 dodgeMovement = new Vector3(dodgeDirection.x, 0, dodgeDirection.y);
+                    dodgeMovement = isoRotation * dodgeMovement;
+                    Vector2 dodge2D = new(dodgeMovement.x, dodgeMovement.z);
+                    rb.linearVelocity = dodge2D * dodgeSpeed;
                     break;
 
                 case PlayerState.Dead:
@@ -213,7 +218,7 @@ namespace Aeloria.Entities.Player
             if (!canMove || currentState == PlayerState.Dodging) return;
 
             // Apply movement velocity
-            rb.linearVelocity = direction * moveSpeed;
+            rb.linearVelocity = new Vector2(direction.x, direction.z) * moveSpeed;
 
             // Flip sprite to face movement direction
             if (spriteRenderer != null && Mathf.Abs(direction.x) > 0.1f)
