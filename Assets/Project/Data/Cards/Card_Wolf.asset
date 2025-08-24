@@ -1,0 +1,25 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1beb40f848dea9744a9ac1d162f69754, type: 3}
+  m_Name: Card_Wolf
+  m_EditorClassIdentifier: 
+  cardName: Wolf Summon
+  cardIcon: {fileID: 0}
+  description: Summons a wolf companion
+  cardType: 0
+  prefabToSpawn: {fileID: 8204038650164759674, guid: d6f13e1af0c00a3489f22e199da20315, type: 3}
+  energyCost: 2
+  maxCharges: 3
+  cooldown: 1
+  health: 15
+  damage: 3
+  moveSpeed: 4

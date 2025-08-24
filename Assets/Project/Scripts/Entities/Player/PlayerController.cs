@@ -1,67 +1,102 @@
-using UnityEngine;
+﻿using UnityEngine;
 using Aeloria.Core;
 using Aeloria.Entities;
 
 namespace Aeloria.Entities.Player
 {
     /// <summary>
-    /// Controls player movement, dodging, and state management
-    /// Handles all player input and broadcasts player events
+    /// Player Controller fixed for Unity 2023/6 with comprehensive debug
     /// </summary>
     public class PlayerController : EntityBase, IMoveable
     {
         [Header("Player Settings")]
-        [SerializeField] private float moveSpeed = 5f;      // How fast player moves normally
-        [SerializeField] private float dodgeSpeed = 15f;    // Speed during dodge roll
-        [SerializeField] private float dodgeDuration = 0.3f; // How long dodge lasts
-        [SerializeField] private float dodgeCooldown = 1f;   // Time between dodges
+        [SerializeField] private float moveSpeed = 5f;
+        [SerializeField] private float dodgeSpeed = 15f;
+        [SerializeField] private float dodgeDuration = 0.3f;
+        [SerializeField] private float dodgeCooldown = 1f;
 
-        // ===== STATE MANAGEMENT =====
-        // Player can only be in one state at a time
+        [Header("Debug Settings")]
+        [SerializeField] private bool enableDebugLogs = true;
+        [SerializeField] private bool showDebugGizmos = true;
+
+        // Player states
         public enum PlayerState
         {
-            Idle,    // Standing still
-            Moving,  // Walking/running
-            Dodging, // Mid-dodge roll (invulnerable)
-            Casting, // Playing a card (can't move)
-            Dead     // Game over
+            Idle,
+            Moving,
+            Dodging,
+            Casting,
+            Dead
         }
 
         private PlayerState currentState = PlayerState.Idle;
 
-        // ===== MOVEMENT VARIABLES =====
-        private Vector2 moveInput;                      // Raw input from WASD/arrows
-        private Vector2 lastMoveDirection = Vector2.down; // Remember last direction for dodge
-        private bool canMove = true;                    // Can be disabled during casting
+        // Movement variables
+        private Vector2 moveInput;
+        private Vector2 lastMoveDirection = Vector2.down;
+        private bool canMove = true;
 
-        // ===== DODGE VARIABLES =====
-        private float dodgeTimer = 0f;         // Counts down during dodge
-        private float dodgeCooldownTimer = 0f; // Prevents dodge spam
-        private Vector2 dodgeDirection;        // Direction we're dodging
+        // Dodge variables
+        private float dodgeTimer = 0f;
+        private float dodgeCooldownTimer = 0f;
+        private Vector2 dodgeDirection;
 
-        // ===== VISUAL COMPONENTS =====
-        private SpriteRenderer spriteRenderer;  // For flipping sprite and visual effects
-        private Renderer visualRenderer;        // Alternative if using 3D model
+        // Visual components
+        private Renderer visualRenderer;
 
-        // ===== PUBLIC PROPERTIES =====
+        // Public properties
         public bool IsMoving => currentState == PlayerState.Moving;
         public bool IsDodging => currentState == PlayerState.Dodging;
         public float CurrentMoveSpeed => moveSpeed;
-        public float CurrentEnergy { get; private set; } = 100f;  // Energy system
+        public float CurrentEnergy { get; private set; } = 100f;
         public float MaxEnergy { get; private set; } = 100f;
         public PlayerState CurrentState => currentState;
 
-        // ===== UNITY LIFECYCLE =====
-
         protected override void Awake()
         {
-            base.Awake();  // IMPORTANT: Calls EntityBase.Awake() to set up rb and collider
+            base.Awake();
 
-            // Get visual components
-            spriteRenderer = GetComponentInChildren<SpriteRenderer>();
+            // spriteRenderer is already set by base.Awake() from EntityBase
+            if (spriteRenderer == null)
+            {
+                spriteRenderer = GetComponentInChildren<SpriteRenderer>();
+            }
             if (spriteRenderer == null)
             {
                 visualRenderer = GetComponentInChildren<Renderer>();
+            }
+
+            // CRITICAL FIX: Ensure player is above ground
+            if (transform.position.y < 0.5f)
+            {
+                transform.position = new Vector3(transform.position.x, 1f, transform.position.z);
+                Debug.LogWarning($"PlayerController: Adjusted Y position to {transform.position.y} to prevent floor collision");
+            }
+
+            // Verify Rigidbody settings
+            if (rb != null)
+            {
+                // For Unity 2023/6 - ensure no damping
+                rb.linearDamping = 0f;
+                rb.angularDamping = 0.05f;
+                rb.useGravity = false;
+
+                // Lock Y position and rotations
+                rb.constraints = RigidbodyConstraints.FreezePositionY |
+                                RigidbodyConstraints.FreezeRotationX |
+                                RigidbodyConstraints.FreezeRotationZ;
+
+                // Set collision detection to prevent tunneling
+                rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+                if (enableDebugLogs)
+                {
+                    Debug.Log($"Rigidbody configured: linearDamping={rb.linearDamping}, constraints={rb.constraints}");
+                }
+            }
+            else
+            {
+                Debug.LogError("PlayerController: No Rigidbody found! Movement will not work!");
             }
         }
 
@@ -69,19 +104,14 @@ namespace Aeloria.Entities.Player
         {
             base.Start();
 
-            // Set player specific values
             entityName = "Player";
-            entityType = EntityType.Player;
-
-            // Initialize energy
             CurrentEnergy = MaxEnergy;
 
-            // Notify systems player has spawned
             EventManager.TriggerEvent("PlayerSpawned", gameObject);
 
-            if (Constants.DEBUG_MODE)
+            if (enableDebugLogs)
             {
-                Debug.Log($"Player spawned! Health: {CurrentHealth}/{MaxHealth}");
+                Debug.Log($"Player spawned at {transform.position}! Health: {CurrentHealth}/{MaxHealth}, MoveSpeed: {moveSpeed}");
             }
         }
 
@@ -92,6 +122,30 @@ namespace Aeloria.Entities.Player
             HandleInput();
             UpdateTimers();
             UpdateState();
+
+            // DEBUG CONTROLS
+            if (enableDebugLogs)
+            {
+                // Press Space for debug info
+                if (Input.GetKeyDown(KeyCode.Space))
+                {
+                    PrintDebugInfo();
+                }
+
+                // Press F9 for Rigidbody info
+                if (Input.GetKeyDown(KeyCode.F9))
+                {
+                    PrintRigidbodyDebug();
+                }
+
+                // Press F10 to reset position
+                if (Input.GetKeyDown(KeyCode.F10))
+                {
+                    transform.position = new Vector3(0, 1, 0);
+                    rb.linearVelocity = Vector3.zero;
+                    Debug.Log("Player position reset to (0, 1, 0)");
+                }
+            }
         }
 
         private void FixedUpdate()
@@ -99,57 +153,60 @@ namespace Aeloria.Entities.Player
             if (!IsAlive) return;
 
             HandleMovement();
+
+            // Prevent falling through floor
+            if (transform.position.y < 0.5f)
+            {
+                transform.position = new Vector3(transform.position.x, 1f, transform.position.z);
+                if (enableDebugLogs)
+                {
+                    Debug.LogWarning($"Player falling! Reset Y to {transform.position.y}");
+                }
+            }
         }
 
-        // ===== INPUT HANDLING =====
-
-        /// <summary>
-        /// Reads player input from keyboard/controller
-        /// Called every frame in Update()
-        /// </summary>
         private void HandleInput()
         {
-            // Get movement input (WASD or Arrow keys)
-            moveInput.x = Input.GetAxisRaw("Horizontal");
-            moveInput.y = Input.GetAxisRaw("Vertical");
-            moveInput = moveInput.normalized; // Prevent diagonal speed boost
+            // Get movement input
+            float horizontal = Input.GetAxisRaw("Horizontal");
+            float vertical = Input.GetAxisRaw("Vertical");
+            moveInput = new Vector2(horizontal, vertical).normalized;
 
-            // Remember last direction for dodging
+            // Log input if moving
+            if (enableDebugLogs && moveInput.magnitude > 0.1f)
+            {
+                Debug.Log($"Input detected: ({horizontal}, {vertical}) → normalized: {moveInput}");
+            }
+
+            // Remember last direction
             if (moveInput.magnitude > 0.1f)
             {
                 lastMoveDirection = moveInput;
             }
 
-            // Check for dodge input (Left Shift by default)
+            // Check for dodge
             if (Input.GetKeyDown(KeyCode.LeftShift))
             {
                 TryDodge();
             }
         }
 
-        // ===== STATE MANAGEMENT =====
-
-        /// <summary>
-        /// Updates the player's state based on current conditions
-        /// States control what actions are available
-        /// </summary>
         private void UpdateState()
         {
-            // Dead state overrides everything
+            PlayerState previousState = currentState;
+
             if (!IsAlive)
             {
                 currentState = PlayerState.Dead;
                 return;
             }
 
-            // Dodging has priority over movement
             if (dodgeTimer > 0)
             {
                 currentState = PlayerState.Dodging;
                 return;
             }
 
-            // Check if moving
             if (moveInput.magnitude > 0.1f && canMove)
             {
                 currentState = PlayerState.Moving;
@@ -158,15 +215,16 @@ namespace Aeloria.Entities.Player
             {
                 currentState = PlayerState.Idle;
             }
+
+            // Log state changes
+            if (enableDebugLogs && previousState != currentState)
+            {
+                Debug.Log($"State changed: {previousState} → {currentState}");
+            }
         }
 
-        /// <summary>
-        /// Updates all timer countdowns
-        /// Called every frame
-        /// </summary>
         private void UpdateTimers()
         {
-            // Count down dodge duration
             if (dodgeTimer > 0)
             {
                 dodgeTimer -= Time.deltaTime;
@@ -176,70 +234,67 @@ namespace Aeloria.Entities.Player
                 }
             }
 
-            // Count down dodge cooldown
             if (dodgeCooldownTimer > 0)
             {
                 dodgeCooldownTimer -= Time.deltaTime;
             }
         }
 
-        // ===== MOVEMENT =====
-
-        /// <summary>
-        /// Applies movement based on current state
-        /// Called in FixedUpdate for smooth physics
-        /// </summary>
         private void HandleMovement()
         {
+            Vector3 targetVelocity = Vector3.zero;
+
             switch (currentState)
             {
                 case PlayerState.Idle:
-                    // Stop completely when idle
-                    rb.linearVelocity = Vector3.zero;
+                    targetVelocity = Vector3.zero;
                     break;
 
                 case PlayerState.Moving:
-                    // For 3D isometric movement
-                    Vector3 movement = new Vector3(moveInput.x, 0, moveInput.y) * moveSpeed;
-                    rb.linearVelocity = movement;
+                    // 3D movement on X-Z plane (Y stays 0)
+                    targetVelocity = new Vector3(moveInput.x, 0, moveInput.y) * moveSpeed;
                     break;
 
                 case PlayerState.Dodging:
-                    // Fast movement in dodge direction
-                    Vector3 dodgeMovement = new Vector3(dodgeDirection.x, 0, dodgeDirection.y) * dodgeSpeed;
-                    rb.linearVelocity = dodgeMovement;
+                    targetVelocity = new Vector3(dodgeDirection.x, 0, dodgeDirection.y) * dodgeSpeed;
                     break;
 
                 case PlayerState.Dead:
-                    // No movement when dead
-                    rb.linearVelocity = Vector3.zero;
+                    targetVelocity = Vector3.zero;
                     break;
             }
-        }
 
-        /// <summary>
-        /// Moves the player in a direction
-        /// Implements IMoveable interface
-        /// </summary>
-        public void Move(Vector3 direction)
-        {
-            // Can't move while dodging or if movement disabled
-            if (!canMove || currentState == PlayerState.Dodging) return;
-
-            // Apply movement velocity
-            rb.linearVelocity = direction * moveSpeed;
-
-            // Flip sprite to face movement direction
-            if (spriteRenderer != null && Mathf.Abs(direction.x) > 0.1f)
+            // Apply velocity using the Unity 2023/6 property
+            if (rb != null)
             {
-                spriteRenderer.flipX = direction.x < 0; // Flip when moving left
+                rb.linearVelocity = targetVelocity;
+
+                // Log significant velocity changes
+                if (enableDebugLogs && rb.linearVelocity.magnitude > 0.1f)
+                {
+                    Debug.Log($"Velocity applied: {rb.linearVelocity} (magnitude: {rb.linearVelocity.magnitude:F2})");
+                }
+            }
+            else
+            {
+                Debug.LogError("No Rigidbody found - cannot apply movement!");
             }
         }
 
-        /// <summary>
-        /// Stops all player movement immediately
-        /// Used when entering cutscenes or menus
-        /// </summary>
+        public void Move(Vector3 direction)
+        {
+            if (!canMove || currentState == PlayerState.Dodging) return;
+
+            // Apply 3D movement
+            rb.linearVelocity = new Vector3(direction.x, 0, direction.z) * moveSpeed;
+
+            // Flip sprite
+            if (spriteRenderer != null && Mathf.Abs(direction.x) > 0.1f)
+            {
+                spriteRenderer.flipX = direction.x < 0;
+            }
+        }
+
         public void StopMovement()
         {
             if (rb != null)
@@ -247,33 +302,32 @@ namespace Aeloria.Entities.Player
                 rb.linearVelocity = Vector3.zero;
             }
             moveInput = Vector2.zero;
+
+            if (enableDebugLogs)
+            {
+                Debug.Log("Movement stopped");
+            }
         }
 
-        // ===== DODGE MECHANICS =====
-
-        /// <summary>
-        /// Attempts to perform a dodge roll
-        /// Fails if on cooldown or already dodging
-        /// </summary>
         private void TryDodge()
         {
-            // Check if we can dodge
             if (dodgeCooldownTimer > 0 || currentState == PlayerState.Dodging)
+            {
+                if (enableDebugLogs)
+                {
+                    Debug.Log($"Cannot dodge: Cooldown={dodgeCooldownTimer:F2}, State={currentState}");
+                }
                 return;
+            }
 
-            // ===== START DODGE =====
             currentState = PlayerState.Dodging;
-            dodgeTimer = dodgeDuration;           // Start countdown
-            dodgeCooldownTimer = dodgeCooldown;   // Start cooldown
+            dodgeTimer = dodgeDuration;
+            dodgeCooldownTimer = dodgeCooldown;
 
-            // Dodge in movement direction, or last faced direction if standing
             dodgeDirection = moveInput.magnitude > 0.1f ? moveInput : lastMoveDirection;
-
-            // Make invulnerable during dodge
             canBeTargeted = false;
 
-            // ===== VISUAL FEEDBACK =====
-            // Make player semi-transparent
+            // Visual feedback
             if (spriteRenderer != null)
             {
                 spriteRenderer.color = new Color(1f, 1f, 1f, 0.5f);
@@ -285,22 +339,16 @@ namespace Aeloria.Entities.Player
                 visualRenderer.material.color = c;
             }
 
-            // Notify other systems (for sound effects, etc.)
             EventManager.TriggerEvent("PlayerDodged", dodgeDirection);
 
-            if (Constants.DEBUG_MODE)
+            if (enableDebugLogs)
             {
-                Debug.Log("Player dodged!");
+                Debug.Log($"Dodge started! Direction: {dodgeDirection}");
             }
         }
 
-        /// <summary>
-        /// Called when dodge roll ends
-        /// Restores vulnerability and visual state
-        /// </summary>
         private void EndDodge()
         {
-            // Restore vulnerability
             canBeTargeted = true;
 
             // Reset visual
@@ -315,45 +363,60 @@ namespace Aeloria.Entities.Player
                 visualRenderer.material.color = c;
             }
 
-            if (Constants.DEBUG_MODE)
+            if (enableDebugLogs)
             {
                 Debug.Log("Dodge ended");
             }
         }
 
-        // ===== DEATH HANDLING =====
-
-        /// <summary>
-        /// Called when player health reaches zero
-        /// Triggers game over sequence
-        /// </summary>
         protected override void HandleDeath()
         {
             currentState = PlayerState.Dead;
             StopMovement();
 
-            // Disable collisions
             if (col != null)
             {
                 col.enabled = false;
             }
 
-            // Notify game systems
             EventManager.TriggerEvent("PlayerDied", transform.position);
 
-            // Could trigger death animation here
-            if (Constants.DEBUG_MODE)
+            Debug.Log("GAME OVER - Player has died!");
+        }
+
+        // DEBUG METHODS
+        private void PrintDebugInfo()
+        {
+            Debug.Log("=== PLAYER DEBUG INFO ===");
+            Debug.Log($"Position: {transform.position}");
+            Debug.Log($"State: {currentState}");
+            Debug.Log($"MoveInput: {moveInput}");
+            Debug.Log($"CanMove: {canMove}");
+            Debug.Log($"MoveSpeed: {moveSpeed}");
+            Debug.Log($"IsAlive: {IsAlive}");
+            Debug.Log($"Health: {CurrentHealth}/{MaxHealth}");
+        }
+
+        private void PrintRigidbodyDebug()
+        {
+            if (rb != null)
             {
-                Debug.Log("GAME OVER - Player has died!");
+                Debug.Log("=== RIGIDBODY DEBUG ===");
+                Debug.Log($"Velocity: {rb.linearVelocity}");
+                Debug.Log($"Linear Damping: {rb.linearDamping}");
+                Debug.Log($"Angular Damping: {rb.angularDamping}");
+                Debug.Log($"Use Gravity: {rb.useGravity}");
+                Debug.Log($"Is Kinematic: {rb.isKinematic}");
+                Debug.Log($"Constraints: {rb.constraints}");
+                Debug.Log($"Collision Mode: {rb.collisionDetectionMode}");
+            }
+            else
+            {
+                Debug.LogError("NO RIGIDBODY FOUND!");
             }
         }
 
-        // ===== ENERGY SYSTEM =====
-
-        /// <summary>
-        /// Try to consume energy for casting
-        /// Returns true if successful
-        /// </summary>
+        // Energy system methods
         public bool TryConsumeEnergy(float amount)
         {
             if (CurrentEnergy >= amount)
@@ -365,40 +428,40 @@ namespace Aeloria.Entities.Player
             return false;
         }
 
-        /// <summary>
-        /// Regenerate energy over time or from pickups
-        /// </summary>
         public void RegenerateEnergy(float amount)
         {
             CurrentEnergy = Mathf.Min(MaxEnergy, CurrentEnergy + amount);
             EventManager.TriggerEvent("PlayerEnergyChanged", new { current = CurrentEnergy, max = MaxEnergy });
         }
 
-        // ===== DEBUG =====
-
         protected override void OnDrawGizmos()
         {
+            if (!showDebugGizmos) return;
+
             base.OnDrawGizmos();
 
             if (!Application.isPlaying) return;
 
             // Draw movement direction
             Gizmos.color = Color.blue;
-            Gizmos.DrawRay(transform.position, new Vector3(moveInput.x, 0, moveInput.y));
+            Gizmos.DrawRay(transform.position, new Vector3(moveInput.x, 0, moveInput.y) * 2f);
+
+            // Draw velocity
+            if (rb != null)
+            {
+                Gizmos.color = Color.green;
+                Gizmos.DrawRay(transform.position + Vector3.up * 0.1f, rb.linearVelocity);
+            }
 
             // Draw dodge cooldown
             if (dodgeCooldownTimer > 0)
             {
                 Gizmos.color = Color.yellow;
-                float angle = (dodgeCooldownTimer / dodgeCooldown) * 360f;
                 Vector3 from = transform.position + Vector3.up * 0.5f;
-                // Simple cooldown indicator
-                Gizmos.DrawWireSphere(from, 0.2f);
+                Gizmos.DrawWireSphere(from, 0.2f * (dodgeCooldownTimer / dodgeCooldown));
             }
         }
     }
-
-    // ===== INTERFACES =====
 
     public interface IMoveable
     {

@@ -1,14 +1,18 @@
-using Aeloria.Core;
-using Aeloria.UI;
 using UnityEngine;
+using System;
+using System.Collections;
+using Aeloria.Core;
 
 namespace Aeloria.Entities
 {
+    /// <summary>
+    /// Base class for all entities - Updated for 3D physics (isometric game)
+    /// </summary>
     public abstract class EntityBase : MonoBehaviour, IEntity, IDamageable, ITargetable
     {
         [Header("Entity Settings")]
         [SerializeField] protected string entityName = "Entity";
-        [SerializeField] protected float maxHealth = 10f;
+        [SerializeField] protected float maxHealth = 100f;
         [SerializeField] protected bool canBeTargeted = true;
 
         // Properties
@@ -19,39 +23,58 @@ namespace Aeloria.Entities
         public float CurrentHealth { get; protected set; }
         public bool CanBeTargeted => canBeTargeted && IsAlive;
 
-        // Components
-        protected Rigidbody2D rb;
-        protected Collider2D col;
+        // Components - CHANGED TO 3D
+        protected Rigidbody rb;  // Changed from Rigidbody2D
+        protected Collider col;  // Changed from Collider2D
         protected SpriteRenderer spriteRenderer;
 
         // Events
-        public System.Action<float, float> OnHealthChanged;
-        public System.Action<float, GameObject> OnDamageTaken;
-        public System.Action OnDeath;
+        public Action<float, float> OnHealthChanged;
+        public Action<float, GameObject> OnDamageTaken;
+        public Action OnDeath;
 
         protected virtual void Awake()
         {
-            // Cache components
-            rb = GetComponent<Rigidbody2D>();
-            col = GetComponent<Collider2D>();
+            // Cache components - NOW 3D
+            rb = GetComponent<Rigidbody>();
+            col = GetComponent<Collider>();
             spriteRenderer = GetComponentInChildren<SpriteRenderer>();
 
             // Create components if missing
             if (rb == null)
             {
-                rb = gameObject.AddComponent<Rigidbody2D>();
-                rb.gravityScale = 0f; // Top-down game
+                rb = gameObject.AddComponent<Rigidbody>();
+                // Configure for isometric movement
+                rb.useGravity = false;  // No gravity for isometric
+                rb.linearDamping = 0f;   // No damping for responsive movement
+                rb.angularDamping = 0.05f;
+                rb.constraints = RigidbodyConstraints.FreezePositionY |  // Lock Y for flat movement
+                               RigidbodyConstraints.FreezeRotationX |
+                               RigidbodyConstraints.FreezeRotationZ;
+                rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+                if (Constants.DEBUG_MODE)
+                {
+                    Debug.LogWarning($"{entityName}: Added missing Rigidbody component (3D)");
+                }
             }
 
             if (col == null)
             {
-                col = gameObject.AddComponent<CircleCollider2D>();
+                col = gameObject.AddComponent<CapsuleCollider>();
+                if (Constants.DEBUG_MODE)
+                {
+                    Debug.LogWarning($"{entityName}: Added missing Collider component (3D)");
+                }
             }
         }
 
         protected virtual void Start()
         {
             Initialize();
+
+            // Register with game systems
+            EventManager.TriggerEvent("EntitySpawned", this);
         }
 
         public virtual void Initialize()
@@ -61,7 +84,7 @@ namespace Aeloria.Entities
 
             if (Constants.DEBUG_MODE)
             {
-                Debug.Log($"{EntityName} initialized with {MaxHealth} HP");
+                Debug.Log($"{EntityName} initialized with {MaxHealth} HP at position {transform.position}");
             }
         }
 
@@ -76,9 +99,6 @@ namespace Aeloria.Entities
             StartCoroutine(DamageFlash());
 
             // Events
-            UIEvents.TriggerHealthChanged(CurrentHealth, MaxHealth, gameObject);
-            UIEvents.TriggerDamageReceived(damage, gameObject);
-
             OnHealthChanged?.Invoke(CurrentHealth, MaxHealth);
             OnDamageTaken?.Invoke(damage, source);
             EventManager.TriggerEvent("EntityDamaged", new { entity = this, damage = damage, source = source });
@@ -102,9 +122,6 @@ namespace Aeloria.Entities
             CurrentHealth = Mathf.Min(MaxHealth, CurrentHealth + amount);
             float actualHealing = CurrentHealth - previousHealth;
 
-            UIEvents.TriggerHealthChanged(CurrentHealth, MaxHealth, gameObject);
-            UIEvents.TriggerHealReceived(actualHealing, gameObject);
-
             OnHealthChanged?.Invoke(CurrentHealth, MaxHealth);
             EventManager.TriggerEvent("EntityHealed", new { entity = this, amount = actualHealing });
 
@@ -126,52 +143,87 @@ namespace Aeloria.Entities
 
             if (Constants.DEBUG_MODE)
             {
-                Debug.Log($"{EntityName} died!");
+                Debug.Log($"{EntityName} has died!");
             }
 
-            // Override in derived classes for specific death behavior
+            // Disable physics
+            if (rb != null)
+            {
+                rb.linearVelocity = Vector3.zero;
+                rb.isKinematic = true;
+            }
+
+            if (col != null)
+            {
+                col.enabled = false;
+            }
+
             HandleDeath();
         }
 
+        /// <summary>
+        /// Override to implement death behavior
+        /// </summary>
         protected abstract void HandleDeath();
 
+        /// <summary>
+        /// Get position for targeting
+        /// </summary>
         public virtual Vector3 GetTargetPosition()
         {
-            return transform.position;
+            // Return center mass position or custom target point
+            return transform.position + Vector3.up * 0.5f;
         }
 
+        /// <summary>
+        /// Get targeting priority (higher = more likely to be targeted)
+        /// </summary>
         public virtual float GetTargetPriority()
         {
-            // Lower health = higher priority
-            return 1f - (CurrentHealth / MaxHealth);
+            // Base priority on health percentage
+            float healthPercent = CurrentHealth / MaxHealth;
+            return 1f - healthPercent;  // Lower health = higher priority
         }
 
-        protected System.Collections.IEnumerator DamageFlash()
+        /// <summary>
+        /// Damage flash effect
+        /// </summary>
+        protected virtual IEnumerator DamageFlash()
         {
-            if (spriteRenderer != null)
-            {
-                Color originalColor = spriteRenderer.color;
-                spriteRenderer.color = Color.red;
-                yield return new WaitForSeconds(Constants.HIT_FLASH_DURATION);
-                spriteRenderer.color = originalColor;
-            }
+            if (spriteRenderer == null) yield break;
+
+            Color originalColor = spriteRenderer.color;
+            spriteRenderer.color = Color.red;
+            yield return new WaitForSeconds(0.1f);
+            spriteRenderer.color = originalColor;
         }
 
-        // Debug visualization
+        /// <summary>
+        /// Debug visualization
+        /// </summary>
         protected virtual void OnDrawGizmos()
         {
             if (!Application.isPlaying) return;
 
             // Health bar
-            Vector3 barPos = transform.position + Vector3.up * 1.5f;
-            float barWidth = 1f;
+            Vector3 barPos = transform.position + Vector3.up * 2f;
             float healthPercent = CurrentHealth / MaxHealth;
 
             Gizmos.color = Color.red;
-            Gizmos.DrawLine(barPos - Vector3.right * barWidth / 2, barPos + Vector3.right * barWidth / 2);
+            Gizmos.DrawLine(barPos - Vector3.right * 0.5f, barPos + Vector3.right * 0.5f);
 
             Gizmos.color = Color.green;
-            Gizmos.DrawLine(barPos - Vector3.right * barWidth / 2, barPos - Vector3.right * barWidth / 2 + Vector3.right * barWidth * healthPercent);
+            Gizmos.DrawLine(barPos - Vector3.right * 0.5f,
+                          barPos - Vector3.right * 0.5f + Vector3.right * healthPercent);
+
+            // Target position
+            if (canBeTargeted)
+            {
+                Gizmos.color = Color.yellow;
+                Gizmos.DrawWireSphere(GetTargetPosition(), 0.2f);
+            }
         }
     }
+
+    // Interfaces are defined in IEntity.cs - don't duplicate them here
 }
