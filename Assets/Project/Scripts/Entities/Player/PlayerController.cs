@@ -5,7 +5,7 @@ using Aeloria.Entities;
 namespace Aeloria.Entities.Player
 {
     /// <summary>
-    /// Player Controller fixed for Unity 2023/6 with comprehensive debug
+    /// Player Controller with screen-relative movement for isometric view
     /// </summary>
     public class PlayerController : EntityBase, IMoveable
     {
@@ -15,9 +15,14 @@ namespace Aeloria.Entities.Player
         [SerializeField] private float dodgeDuration = 0.3f;
         [SerializeField] private float dodgeCooldown = 1f;
 
+        [Header("Energy Settings")]
+        [SerializeField] private float maxEnergy = 100f;
+        [SerializeField] private float energyRegenRate = 2f;
+
         [Header("Debug Settings")]
         [SerializeField] private bool enableDebugLogs = true;
         [SerializeField] private bool showDebugGizmos = true;
+        [SerializeField] private bool useScreenRelativeMovement = true;
 
         // Player states
         public enum PlayerState
@@ -44,19 +49,22 @@ namespace Aeloria.Entities.Player
         // Visual components
         private Renderer visualRenderer;
 
+        // Energy
+        private float currentEnergy;
+
         // Public properties
         public bool IsMoving => currentState == PlayerState.Moving;
         public bool IsDodging => currentState == PlayerState.Dodging;
         public float CurrentMoveSpeed => moveSpeed;
-        public float CurrentEnergy { get; private set; } = 100f;
-        public float MaxEnergy { get; private set; } = 100f;
+        public float CurrentEnergy => currentEnergy;
+        public float MaxEnergy => maxEnergy;
         public PlayerState CurrentState => currentState;
+        public float MoveSpeed => moveSpeed;
 
         protected override void Awake()
         {
             base.Awake();
 
-            // spriteRenderer is already set by base.Awake() from EntityBase
             if (spriteRenderer == null)
             {
                 spriteRenderer = GetComponentInChildren<SpriteRenderer>();
@@ -66,27 +74,20 @@ namespace Aeloria.Entities.Player
                 visualRenderer = GetComponentInChildren<Renderer>();
             }
 
-            // CRITICAL FIX: Ensure player is above ground
             if (transform.position.y < 0.5f)
             {
                 transform.position = new Vector3(transform.position.x, 1f, transform.position.z);
-                Debug.LogWarning($"PlayerController: Adjusted Y position to {transform.position.y} to prevent floor collision");
+                Debug.LogWarning($"PlayerController: Adjusted Y position to {transform.position.y}");
             }
 
-            // Verify Rigidbody settings
             if (rb != null)
             {
-                // For Unity 2023/6 - ensure no damping
                 rb.linearDamping = 0f;
                 rb.angularDamping = 0.05f;
                 rb.useGravity = false;
-
-                // Lock Y position and rotations
                 rb.constraints = RigidbodyConstraints.FreezePositionY |
                                 RigidbodyConstraints.FreezeRotationX |
                                 RigidbodyConstraints.FreezeRotationZ;
-
-                // Set collision detection to prevent tunneling
                 rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
 
                 if (enableDebugLogs)
@@ -96,17 +97,15 @@ namespace Aeloria.Entities.Player
             }
             else
             {
-                Debug.LogError("PlayerController: No Rigidbody found! Movement will not work!");
+                Debug.LogError("PlayerController: No Rigidbody found!");
             }
         }
 
         protected override void Start()
         {
             base.Start();
-
             entityName = "Player";
-            CurrentEnergy = MaxEnergy;
-
+            currentEnergy = maxEnergy;
             EventManager.TriggerEvent("PlayerSpawned", gameObject);
 
             if (enableDebugLogs)
@@ -119,26 +118,21 @@ namespace Aeloria.Entities.Player
         {
             if (!IsAlive) return;
 
-            HandleInput();
+            ProcessInput();
             UpdateTimers();
             UpdateState();
+            RegenerateEnergyOverTime();
 
-            // DEBUG CONTROLS
             if (enableDebugLogs)
             {
-                // Press Space for debug info
                 if (Input.GetKeyDown(KeyCode.Space))
                 {
                     PrintDebugInfo();
                 }
-
-                // Press F9 for Rigidbody info
                 if (Input.GetKeyDown(KeyCode.F9))
                 {
                     PrintRigidbodyDebug();
                 }
-
-                // Press F10 to reset position
                 if (Input.GetKeyDown(KeyCode.F10))
                 {
                     transform.position = new Vector3(0, 1, 0);
@@ -152,9 +146,8 @@ namespace Aeloria.Entities.Player
         {
             if (!IsAlive) return;
 
-            HandleMovement();
+            ApplyMovement();
 
-            // Prevent falling through floor
             if (transform.position.y < 0.5f)
             {
                 transform.position = new Vector3(transform.position.x, 1f, transform.position.z);
@@ -165,26 +158,40 @@ namespace Aeloria.Entities.Player
             }
         }
 
-        private void HandleInput()
+        private void ProcessInput()
         {
-            // Get movement input
             float horizontal = Input.GetAxisRaw("Horizontal");
             float vertical = Input.GetAxisRaw("Vertical");
-            moveInput = new Vector2(horizontal, vertical).normalized;
 
-            // Log input if moving
-            if (enableDebugLogs && moveInput.magnitude > 0.1f)
+            if (useScreenRelativeMovement)
             {
-                Debug.Log($"Input detected: ({horizontal}, {vertical}) → normalized: {moveInput}");
+                // Isometric screen-relative movement
+                // W moves north (up on screen), S south, A west, D east
+                float worldX = (horizontal + vertical) * 0.707f;
+                float worldZ = (vertical - horizontal) * 0.707f;
+                moveInput = new Vector2(worldX, worldZ);
+
+                if (moveInput.magnitude > 1f)
+                {
+                    moveInput = moveInput.normalized;
+                }
+            }
+            else
+            {
+                // Direct world-space movement
+                moveInput = new Vector2(horizontal, vertical).normalized;
             }
 
-            // Remember last direction
+            if (enableDebugLogs && moveInput.magnitude > 0.1f)
+            {
+                Debug.Log($"Input: H={horizontal}, V={vertical} → Move: {moveInput}");
+            }
+
             if (moveInput.magnitude > 0.1f)
             {
                 lastMoveDirection = moveInput;
             }
 
-            // Check for dodge
             if (Input.GetKeyDown(KeyCode.LeftShift))
             {
                 TryDodge();
@@ -216,7 +223,6 @@ namespace Aeloria.Entities.Player
                 currentState = PlayerState.Idle;
             }
 
-            // Log state changes
             if (enableDebugLogs && previousState != currentState)
             {
                 Debug.Log($"State changed: {previousState} → {currentState}");
@@ -240,7 +246,7 @@ namespace Aeloria.Entities.Player
             }
         }
 
-        private void HandleMovement()
+        private void ApplyMovement()
         {
             Vector3 targetVelocity = Vector3.zero;
 
@@ -251,7 +257,6 @@ namespace Aeloria.Entities.Player
                     break;
 
                 case PlayerState.Moving:
-                    // 3D movement on X-Z plane (Y stays 0)
                     targetVelocity = new Vector3(moveInput.x, 0, moveInput.y) * moveSpeed;
                     break;
 
@@ -264,20 +269,14 @@ namespace Aeloria.Entities.Player
                     break;
             }
 
-            // Apply velocity using the Unity 2023/6 property
             if (rb != null)
             {
                 rb.linearVelocity = targetVelocity;
 
-                // Log significant velocity changes
                 if (enableDebugLogs && rb.linearVelocity.magnitude > 0.1f)
                 {
-                    Debug.Log($"Velocity applied: {rb.linearVelocity} (magnitude: {rb.linearVelocity.magnitude:F2})");
+                    Debug.Log($"Velocity: {rb.linearVelocity} (mag: {rb.linearVelocity.magnitude:F2})");
                 }
-            }
-            else
-            {
-                Debug.LogError("No Rigidbody found - cannot apply movement!");
             }
         }
 
@@ -285,10 +284,8 @@ namespace Aeloria.Entities.Player
         {
             if (!canMove || currentState == PlayerState.Dodging) return;
 
-            // Apply 3D movement
             rb.linearVelocity = new Vector3(direction.x, 0, direction.z) * moveSpeed;
 
-            // Flip sprite
             if (spriteRenderer != null && Mathf.Abs(direction.x) > 0.1f)
             {
                 spriteRenderer.flipX = direction.x < 0;
@@ -323,11 +320,9 @@ namespace Aeloria.Entities.Player
             currentState = PlayerState.Dodging;
             dodgeTimer = dodgeDuration;
             dodgeCooldownTimer = dodgeCooldown;
-
             dodgeDirection = moveInput.magnitude > 0.1f ? moveInput : lastMoveDirection;
             canBeTargeted = false;
 
-            // Visual feedback
             if (spriteRenderer != null)
             {
                 spriteRenderer.color = new Color(1f, 1f, 1f, 0.5f);
@@ -351,7 +346,6 @@ namespace Aeloria.Entities.Player
         {
             canBeTargeted = true;
 
-            // Reset visual
             if (spriteRenderer != null)
             {
                 spriteRenderer.color = Color.white;
@@ -380,20 +374,68 @@ namespace Aeloria.Entities.Player
             }
 
             EventManager.TriggerEvent("PlayerDied", transform.position);
-
             Debug.Log("GAME OVER - Player has died!");
         }
 
-        // DEBUG METHODS
+        // ENERGY SYSTEM
+        private void RegenerateEnergyOverTime()
+        {
+            if (currentEnergy < maxEnergy)
+            {
+                currentEnergy = Mathf.Min(maxEnergy, currentEnergy + energyRegenRate * Time.deltaTime);
+
+                if (Time.frameCount % 30 == 0)
+                {
+                    EventManager.TriggerEvent("PlayerEnergyChanged", new { current = currentEnergy, max = maxEnergy });
+                }
+            }
+        }
+
+        public void ConsumeEnergy(float amount)
+        {
+            currentEnergy = Mathf.Max(0, currentEnergy - amount);
+            EventManager.TriggerEvent("PlayerEnergyChanged", new { current = currentEnergy, max = maxEnergy });
+
+            if (enableDebugLogs)
+            {
+                Debug.Log($"Energy consumed: {amount}. Current: {currentEnergy}/{maxEnergy}");
+            }
+        }
+
+        public bool HasEnergy(float amount)
+        {
+            return currentEnergy >= amount;
+        }
+
+        public bool TryConsumeEnergy(float amount)
+        {
+            if (currentEnergy >= amount)
+            {
+                ConsumeEnergy(amount);
+                return true;
+            }
+
+            if (enableDebugLogs)
+            {
+                Debug.Log($"Not enough energy! Need: {amount}, Have: {currentEnergy}");
+            }
+            return false;
+        }
+
+        public void AddEnergy(float amount)
+        {
+            currentEnergy = Mathf.Min(maxEnergy, currentEnergy + amount);
+            EventManager.TriggerEvent("PlayerEnergyChanged", new { current = currentEnergy, max = maxEnergy });
+        }
+
+        // DEBUG
         private void PrintDebugInfo()
         {
             Debug.Log("=== PLAYER DEBUG INFO ===");
             Debug.Log($"Position: {transform.position}");
             Debug.Log($"State: {currentState}");
             Debug.Log($"MoveInput: {moveInput}");
-            Debug.Log($"CanMove: {canMove}");
-            Debug.Log($"MoveSpeed: {moveSpeed}");
-            Debug.Log($"IsAlive: {IsAlive}");
+            Debug.Log($"Energy: {currentEnergy}/{maxEnergy}");
             Debug.Log($"Health: {CurrentHealth}/{MaxHealth}");
         }
 
@@ -403,69 +445,30 @@ namespace Aeloria.Entities.Player
             {
                 Debug.Log("=== RIGIDBODY DEBUG ===");
                 Debug.Log($"Velocity: {rb.linearVelocity}");
-                Debug.Log($"Linear Damping: {rb.linearDamping}");
-                Debug.Log($"Angular Damping: {rb.angularDamping}");
-                Debug.Log($"Use Gravity: {rb.useGravity}");
-                Debug.Log($"Is Kinematic: {rb.isKinematic}");
                 Debug.Log($"Constraints: {rb.constraints}");
-                Debug.Log($"Collision Mode: {rb.collisionDetectionMode}");
             }
-            else
-            {
-                Debug.LogError("NO RIGIDBODY FOUND!");
-            }
-        }
-
-        // Energy system methods
-        public bool TryConsumeEnergy(float amount)
-        {
-            if (CurrentEnergy >= amount)
-            {
-                CurrentEnergy -= amount;
-                EventManager.TriggerEvent("PlayerEnergyChanged", new { current = CurrentEnergy, max = MaxEnergy });
-                return true;
-            }
-            return false;
-        }
-
-        public void RegenerateEnergy(float amount)
-        {
-            CurrentEnergy = Mathf.Min(MaxEnergy, CurrentEnergy + amount);
-            EventManager.TriggerEvent("PlayerEnergyChanged", new { current = CurrentEnergy, max = MaxEnergy });
         }
 
         protected override void OnDrawGizmos()
         {
             if (!showDebugGizmos) return;
-
             base.OnDrawGizmos();
-
             if (!Application.isPlaying) return;
 
-            // Draw movement direction
             Gizmos.color = Color.blue;
             Gizmos.DrawRay(transform.position, new Vector3(moveInput.x, 0, moveInput.y) * 2f);
 
-            // Draw velocity
             if (rb != null)
             {
                 Gizmos.color = Color.green;
                 Gizmos.DrawRay(transform.position + Vector3.up * 0.1f, rb.linearVelocity);
             }
 
-            // Draw dodge cooldown
             if (dodgeCooldownTimer > 0)
             {
                 Gizmos.color = Color.yellow;
-                Vector3 from = transform.position + Vector3.up * 0.5f;
-                Gizmos.DrawWireSphere(from, 0.2f * (dodgeCooldownTimer / dodgeCooldown));
+                Gizmos.DrawWireSphere(transform.position + Vector3.up * 0.5f, 0.2f * (dodgeCooldownTimer / dodgeCooldown));
             }
         }
-    }
-
-    public interface IMoveable
-    {
-        void Move(Vector3 direction);
-        void StopMovement();
     }
 }

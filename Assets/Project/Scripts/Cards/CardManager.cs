@@ -1,6 +1,7 @@
 using UnityEngine;
 using System.Collections.Generic;
 using Aeloria.Core;
+using Aeloria.Entities.Summons;
 
 namespace Aeloria.Cards
 {
@@ -12,8 +13,12 @@ namespace Aeloria.Cards
 
         [Header("Spawn Settings")]
         [SerializeField] private float spawnDistance = 2f;
-        [SerializeField] private float spawnHeightOffset = 2f; // Height above player
+        [SerializeField] private float spawnHeightOffset = 2f;
         [SerializeField] private Transform player;
+
+        // Track active summons for secondary effects
+        private Dictionary<CardData, SummonBase> activeSummons = new Dictionary<CardData, SummonBase>();
+        private int nextSummonID = 0;
 
         void Start()
         {
@@ -51,14 +56,29 @@ namespace Aeloria.Cards
 
             CardData card = cardSlots[slotIndex];
 
-            // Check charges
+            // CHECK FOR SECONDARY EFFECT FIRST
+            if (activeSummons.TryGetValue(card, out SummonBase existingSummon))
+            {
+                if (existingSummon != null && existingSummon.HasSecondaryEffect)
+                {
+                    // Try to use secondary effect instead of spawning new summon
+                    if (existingSummon.TrySecondaryEffect())
+                    {
+                        Debug.Log($"Used secondary effect for {card.cardName}!");
+                        EventManager.TriggerEvent("SecondaryEffectUsed", card);
+                        return; // Don't spawn new summon
+                    }
+                }
+            }
+
+            // No active summon or secondary failed - check charges for primary cast
             if (currentCharges[slotIndex] <= 0)
             {
                 Debug.Log($"{card.cardName} has no charges left!");
                 return;
             }
 
-            // Cast the card
+            // Cast the primary card effect
             CastCard(card, slotIndex);
         }
 
@@ -66,52 +86,107 @@ namespace Aeloria.Cards
         {
             Debug.Log($"Casting {card.cardName}!");
 
-            // Get spawn direction
-            Vector3 spawnDirection = Vector3.forward; // Default forward
-
-            // Try to use player's forward direction
-            if (player.forward != Vector3.zero)
+            // Get spawn direction based on player facing or use default
+            Vector3 spawnDirection = player.forward;
+            if (spawnDirection.magnitude < 0.1f)
             {
-                spawnDirection = player.forward;
-            }
-            else
-            {
-                // If no forward (2D sprite), use world forward
+                // If player has no forward (2D sprite), use a default direction
                 spawnDirection = new Vector3(0, 0, 1);
             }
 
             // Calculate spawn position
             Vector3 spawnPos = player.position + (spawnDirection.normalized * spawnDistance);
 
-            // Force spawn height to be well above grid
-            spawnPos.y = 3f; // High enough to clear any floor
+            // CRITICAL FIX: Set Y to exactly 1 unit above ground
+            // This ensures summons spawn at correct height regardless of grid
+            spawnPos.y = 1f;
 
             Debug.Log($"Spawning {card.cardName} at position: {spawnPos}");
 
-            // Spawn the entity
             if (card.prefabToSpawn != null)
             {
                 GameObject spawned = Instantiate(card.prefabToSpawn, spawnPos, Quaternion.identity);
 
-                // Ensure the spawned entity has proper physics setup
+                // Initialize summon if it has SummonBase
+                var summonBase = spawned.GetComponent<SummonBase>();
+                if (summonBase != null)
+                {
+                    summonBase.InitializeSummon(player.gameObject, card, nextSummonID++);
+
+                    if (activeSummons.ContainsKey(card))
+                    {
+                        CleanupSummon(card);
+                    }
+                    activeSummons[card] = summonBase;
+
+                    summonBase.OnSummonExpired += (summon) => OnSummonExpired(card, summon);
+                }
+
+                // Ensure physics setup for future-proofing
                 if (spawned.TryGetComponent<Rigidbody>(out var rb))
                 {
                     rb.isKinematic = false;
-                    rb.useGravity = false;
-                    Debug.Log($"Wolf Rigidbody - IsKinematic: {rb.isKinematic}, UseGravity: {rb.useGravity}");
+                    rb.useGravity = true; // Let gravity handle positioning
+                    rb.constraints = RigidbodyConstraints.FreezeRotationX |
+                                   RigidbodyConstraints.FreezeRotationZ;
                 }
 
-                // Use a charge
                 currentCharges[slotIndex]--;
                 Debug.Log($"{card.cardName} charges remaining: {currentCharges[slotIndex]}");
 
-                // Trigger events
                 EventManager.TriggerEvent("CardCast", card);
             }
             else
             {
                 Debug.LogError($"Card {card.cardName} has no prefab assigned!");
             }
+        }
+
+        /// <summary>
+        /// Handle when a summon expires or dies
+        /// </summary>
+        void OnSummonExpired(CardData card, SummonBase summon)
+        {
+            if (activeSummons.ContainsKey(card) && activeSummons[card] == summon)
+            {
+                activeSummons.Remove(card);
+                Debug.Log($"{card.cardName} summon expired - card can spawn new one");
+            }
+        }
+
+        /// <summary>
+        /// Clean up old summon reference
+        /// </summary>
+        void CleanupSummon(CardData card)
+        {
+            if (activeSummons.TryGetValue(card, out var oldSummon))
+            {
+                if (oldSummon != null)
+                {
+                    // Optionally destroy old summon when spawning new one
+                    // Destroy(oldSummon.gameObject);
+                }
+                activeSummons.Remove(card);
+            }
+        }
+
+        /// <summary>
+        /// Check if a card has an active summon
+        /// </summary>
+        public bool HasActiveSummon(CardData card)
+        {
+            return activeSummons.ContainsKey(card) &&
+                   activeSummons[card] != null &&
+                   activeSummons[card].IsAlive;
+        }
+
+        /// <summary>
+        /// Get active summon for a card (for UI purposes)
+        /// </summary>
+        public SummonBase GetActiveSummon(CardData card)
+        {
+            activeSummons.TryGetValue(card, out var summon);
+            return summon;
         }
     }
 }
